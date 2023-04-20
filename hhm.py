@@ -1,142 +1,79 @@
 import numpy as np
-np.set_printoptions(linewidth=np.inf)
 
+np.set_printoptions(linewidth=np.inf)
 
 DELETION_CHARACHTER = '-'
 
-def transition_dictionary_increment(dictionary, k1, k2):
-        if k1 not in dictionary:
-                dictionary[k1] = {}
-        if k2 not in dictionary[k1]:
-                dictionary[k1][k2] = 0
-        dictionary[k1][k2] += 1
 
-def emission_dictionary_increment(dictionary, k1, k2, alpha):
-        if k1 not in dictionary:
-                dictionary[k1] = {l: 0 for l in alpha}
-        dictionary[k1][k2] += 1
+def profile_HMM_pseudocounts(treshold: float, pseudocount: float, alphabet: str, alignment: list[str]):
+    # Construct the seed alignment and save the insertion indices
+    insertion_indices = [j for j in range(len(alignment[0])) if sum(1 for i in range(len(alignment)) if alignment[i][j] == DELETION_CHARACHTER) / len(alignment) > treshold]
+    seed_length = len(alignment[0]) - len(insertion_indices)
 
-def profile_HMM(treshold: float, pseudocount: float, alphabet: str, alignment: list[str]):
-        # Construct dictionary mapping a letter onto an index for later use in our matrix
-        alpha_to_index = {l:i for i,l in enumerate(alphabet)}
+    # Construct profile counts
+    emission_dict = {"I0": {l: 0.0 for l in alphabet}}
+    for j in range(1, seed_length + 1):
+        emission_dict[f"M{j}"] = {l: 0.0 for l in alphabet}
+        emission_dict[f"I{j}"] = {l: 0.0 for l in alphabet}
 
-        # Construct the seed alignment and save the insertion indices
-        insertion_indices = []
-        for j in range(len(alignment[0])):
-                spaces = 0
-                for i in range(len(alignment)):
-                        if alignment[i][j] == DELETION_CHARACHTER:
-                                spaces += 1
-                spaces_normalized = spaces / len(alignment)
-                if (spaces_normalized > treshold):
-                        insertion_indices.append(j)
+    transition_dict = {
+        "S": {"I0": 0.0, "M1": 0.0, "D1": 0.0},
+        "I0": {"I0": 0.0, "M1": 0.0, "D1": 0.0},
+        f"M{seed_length}": {f"I{seed_length}": 0.0, "E": 0.0},
+        f"D{seed_length}": {f"I{seed_length}": 0.0, "E": 0.0},
+        f"I{seed_length}": {f"I{seed_length}": 0.0, "E": 0.0}
+    }
+    for j in range(1, seed_length):
+        transition_dict[f"M{j}"] = {f"I{j}": 0.0, f"M{j + 1}": 0.0, f"D{j + 1}": 0.0}
+        transition_dict[f"D{j}"] = {f"I{j}": 0.0, f"M{j + 1}": 0.0, f"D{j + 1}": 0.0}
+        transition_dict[f"I{j}"] = {f"I{j}": 0.0, f"M{j + 1}": 0.0, f"D{j + 1}": 0.0}
 
-        # Construct profile counts
-        emission_dict = {}
-        transition_dict = {}
+    for sequence in alignment:
+        current_position = 'S'
+        j_seed = 0
+        for j, letter in enumerate(sequence):
+            if j in insertion_indices:
+                next_position = f"I{j_seed}"
+                if letter != DELETION_CHARACHTER:
+                    emission_dict[next_position][letter] += 1
+                    transition_dict[current_position][next_position] += 1
+                    current_position = next_position
+            elif letter == DELETION_CHARACHTER:
+                next_position = f"D{j_seed + 1}"
+                transition_dict[current_position][next_position] += 1
+                current_position = next_position
+                j_seed += 1
+            else:
+                next_position = f"M{j_seed + 1}"
+                emission_dict[next_position][letter] += 1
+                transition_dict[current_position][next_position] += 1
+                current_position = next_position
+                j_seed += 1
+        j = len(sequence)
+        while j in insertion_indices:
+            transition_dict[current_position][f"I{j_seed}"] += 1
+            current_position = f"I{j_seed}"
+        transition_dict[current_position]["E"] += 1
 
-        for i in range(len(alignment)):
-                current_position = 'S'
-                j_seed = 0
-                for j, l in enumerate(alignment[i]):
-                        next_position = ''
-                        if l == DELETION_CHARACHTER:
-                                next_position = f"D{j_seed+1}"
-                                j_seed += 1
-                        elif j in insertion_indices:
-                                next_position = f"I{j_seed}"
-                                emission_dictionary_increment(emission_dict, next_position, l, alphabet)
-                        else:
-                                next_position = f"M{j_seed+1}"
-                                emission_dictionary_increment(emission_dict, next_position, l, alphabet)
-                                j_seed += 1
-                        transition_dictionary_increment(transition_dict, current_position, next_position)
-                        current_position = next_position
+    # Normalize profile counts and factor in pseudocounts
+    for i, n in enumerate(emission_dict):
+        total = sum(emission_dict[n].values())
+        for letter, v in emission_dict[n].items():
+            if total > 0:
+                emission_dict[n][letter] = (v / total + pseudocount) / (1 + pseudocount * len(alphabet))
+            else:
+                emission_dict[n][letter] = pseudocount / (pseudocount * len(alphabet))
 
-        # Normalize profile counts
-        for i, node in enumerate(emission_dict):
-                totalcount = 0
-                for letter in emission_dict[node]:
-                        totalcount += emission_dict[node][letter]
-                for letter in emission_dict[node]:
-                        emission_dict[node][letter] /= totalcount
+    for n1 in transition_dict:
+        total = sum(transition_dict[n1].values())
+        for n2, v in transition_dict[n1].items():
+            if total > 0:
+                transition_dict[n1][n2] = (v / total + pseudocount) / (1 + pseudocount * len(transition_dict[n1]))
+            else:
+                transition_dict[n1][n2] = pseudocount / (pseudocount * len(transition_dict[n1]))
 
-        for i, node1 in enumerate(transition_dict):
-                totalcount = 0
-                for node2 in transition_dict[node1]:
-                        totalcount += transition_dict[node1][node2]
-                for node2 in transition_dict[node1]:
-                        transition_dict[node1][node2] /= totalcount
-
-        print(emission_dict)
-        print(transition_dict)
-
-
-def profile_HMM_2(treshold: float, pseudocount: float, alphabet: str, alignment: list[str]):
-        # Construct dictionary mapping a letter onto an index for later use in our matrix
-        alpha_to_index = {l:i for i,l in enumerate(alphabet)}
-
-        # Construct the seed alignment and save the insertion indices
-        insertion_indices = []
-        for j in range(len(alignment[0])):
-                spaces = 0
-                for i in range(len(alignment)):
-                        if alignment[i][j] == DELETION_CHARACHTER:
-                                spaces += 1
-                spaces_normalized = spaces / len(alignment)
-                if (spaces_normalized > treshold):
-                        insertion_indices.append(j)
-        seed_length = len(alignment[0]) - len(insertion_indices)
-
-        # Construct profile counts
-        transition_matrix = np.zeros((3, 3 * seed_length + 2))
-        emission_matrix = np.zeros((len(alphabet), 2 * seed_length + 1))
-        string = alignment[0]
-
-        for i in range(len(alignment)):
-                print(alignment[i])
-                row = 1
-                j_seed = 0
-                for j, l in enumerate(alignment[i]):
-                        new_row = 0
-                        column = j_seed * 3
-                        if j in insertion_indices:
-                                if l != DELETION_CHARACHTER:
-                                        emission_matrix[alpha_to_index[l]][j_seed + seed_length] += 1
-                                new_row = 2
-                        elif l == DELETION_CHARACHTER:
-                                new_row = 1
-                                column += 2
-                                j_seed += 1
-                        else:
-                                emission_matrix[alpha_to_index[l]][j_seed] += 1
-                                new_row = 0
-                                column += 1
-                                j_seed += 1
-                        transition_matrix[row, column] += 1
-                        row = new_row
-                j = len(alignment[i])
-                while j in insertion_indices:
-                        transition_matrix[row, j_seed * 3] += 1
-                        row = 2
-                transition_matrix[row, j_seed * 3 + 1] += 1
-
-        transition_matrix += pseudocount
-        emission_matrix += pseudocount
-
-        print(emission_matrix)
-
-        # Normalize profile counts
-        for j in range(0, transition_matrix.shape[1], 3):
-                for i in range(3):
-                        transition_matrix[i][j:j+3] /= np.sum(transition_matrix[i][j:j+3])
-        for j in range(0, emission_matrix.shape[1]):
-                emission_matrix[:,j] /= np.sum(emission_matrix[:,j])
-
-        print(transition_matrix)
-        print(emission_matrix)
-        emission_dict = 0
-        return transition_matrix, emission_dict
+    # Return the dictionaries
+    return transition_dict, emission_dict
 
 
 # theta = 0.35
@@ -148,4 +85,4 @@ pseudocount = 0.04
 alphabet = 'ABCDE'
 alignment = ['ABD-DDB', 'CAACCEC']
 
-profile_HMM_2(theta, pseudocount, alphabet, alignment)
+profile_HMM_pseudocounts(theta, pseudocount, alphabet, alignment)
